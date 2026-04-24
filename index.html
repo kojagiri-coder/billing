@@ -1,0 +1,1507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1A3A6B">
+<title>MeriDeewar Billing</title>
+<style>
+  body { margin: 0; padding: 0; background: #FDF8F1; }
+  #root { min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+if (!window.storage) {
+  window.storage = {
+    async get(key) { const v = localStorage.getItem("md_" + key); return v ? { key, value: v } : null; },
+    async set(key, value) { localStorage.setItem("md_" + key, value); return { key, value }; },
+    async delete(key) { localStorage.removeItem("md_" + key); return { key, deleted: true }; },
+    async list(prefix) { const keys = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.startsWith("md_" + (prefix || ""))) keys.push(k.replace("md_", "")); } return { keys }; }
+  };
+}
+
+
+
+/* ═══════════════════════════════════════════════════
+   MERIDEEWAR BILLING APP — Supabase + Multi-Item
+   ═══════════════════════════════════════════════════ */
+
+// ─── SUPABASE CONFIG ───
+// Replace these with your actual Supabase project values (see SETUP-GUIDE.md)
+const SUPABASE_URL = "https://djkztsjmuppmxiuofuus.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRqa3p0c2ptdXBwbXhpdW9mdXVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUxMzE2ODIsImV4cCI6MjA5MDcwNzY4Mn0.gj_bbOT6lOApU4djqKQmwYJk4sm8VdgC1L4PteM1BbQ";
+
+// ─── Lightweight Supabase Client (no npm needed) ───
+const supabase = {
+  _headers: () => ({
+    "Content-Type": "application/json",
+    "apikey": SUPABASE_ANON_KEY,
+    "Authorization": `Bearer ${supabase._token || SUPABASE_ANON_KEY}`,
+  }),
+  _token: null,
+  _userId: null,
+
+  async signUp(email, password) {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
+      method: "POST", headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON_KEY },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await r.json();
+    if (data.access_token) { supabase._token = data.access_token; supabase._userId = data.user?.id; }
+    return data;
+  },
+
+  async signIn(email, password) {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: "POST", headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON_KEY },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await r.json();
+    if (data.access_token) { supabase._token = data.access_token; supabase._userId = data.user?.id; }
+    return data;
+  },
+
+  async signOut() { supabase._token = null; supabase._userId = null; },
+
+  async getUser() {
+    if (!supabase._token) return null;
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: supabase._headers() });
+    if (!r.ok) return null;
+    const data = await r.json();
+    supabase._userId = data.id;
+    return data;
+  },
+
+  // Database operations
+  async select(table, options = {}) {
+    let url = `${SUPABASE_URL}/rest/v1/${table}?select=*`;
+    if (options.order) url += `&order=${options.order}`;
+    if (options.limit) url += `&limit=${options.limit}`;
+    if (options.eq) Object.entries(options.eq).forEach(([k, v]) => { url += `&${k}=eq.${v}`; });
+    const r = await fetch(url, { headers: supabase._headers() });
+    return r.ok ? await r.json() : [];
+  },
+
+  async insert(table, data) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+      method: "POST", headers: { ...supabase._headers(), "Prefer": "return=representation" },
+      body: JSON.stringify(data),
+    });
+    return r.ok ? await r.json() : null;
+  },
+
+  async update(table, match, data) {
+    let url = `${SUPABASE_URL}/rest/v1/${table}?`;
+    Object.entries(match).forEach(([k, v]) => { url += `${k}=eq.${v}&`; });
+    const r = await fetch(url, {
+      method: "PATCH", headers: { ...supabase._headers(), "Prefer": "return=representation" },
+      body: JSON.stringify(data),
+    });
+    return r.ok ? await r.json() : null;
+  },
+
+  async delete(table, match) {
+    let url = `${SUPABASE_URL}/rest/v1/${table}?`;
+    Object.entries(match).forEach(([k, v]) => { url += `${k}=eq.${v}&`; });
+    const r = await fetch(url, { method: "DELETE", headers: supabase._headers() });
+    return r.ok;
+  },
+
+  async upsert(table, data) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+      method: "POST", headers: { ...supabase._headers(), "Prefer": "return=representation,resolution=merge-duplicates" },
+      body: JSON.stringify(data),
+    });
+    return r.ok ? await r.json() : null;
+  },
+};
+
+// Check if Supabase is configured
+const isSupabaseConfigured = SUPABASE_URL !== "YOUR_SUPABASE_URL" && SUPABASE_ANON_KEY !== "YOUR_SUPABASE_ANON_KEY";
+
+// ─── Fallback: Local Storage (works without Supabase) ───
+const BILLS_KEY = "md-bills-v3";
+const SETTINGS_KEY = "md-settings-v3";
+const localGet = async (key) => { try { const r = await window.storage.get(key); return r ? JSON.parse(r.value) : null; } catch { return null; } };
+const localSet = async (key, val) => { try { await window.storage.set(key, JSON.stringify(val)); } catch {} };
+
+const DEFAULT_SETTINGS = {
+  mounts: [
+    { id: "m1", name: "Standard Off-white", rate: 0.50, unit: "sq.inch", maxW: 30, maxH: 40 },
+    { id: "m2", name: "Standard Maroon", rate: 0.50, unit: "sq.inch", maxW: 30, maxH: 40 },
+    { id: "m3", name: "Standard Black", rate: 0.50, unit: "sq.inch", maxW: 30, maxH: 40 },
+    { id: "m4", name: "Premium Red", rate: 0.75, unit: "sq.inch", maxW: 30, maxH: 40 },
+    { id: "m5", name: "Premium Green", rate: 0.75, unit: "sq.inch", maxW: 30, maxH: 40 },
+    { id: "m6", name: "Premium Badge", rate: 0.75, unit: "sq.inch", maxW: 30, maxH: 40 },
+    { id: "m7", name: "Premium Thick Badge", rate: 0.75, unit: "sq.inch", maxW: 30, maxH: 40 },
+    { id: "m8", name: "Standard Big", rate: 1.00, unit: "sq.inch", maxW: 40, maxH: 60 },
+  ],
+  covers: [
+    { id: "c1", name: "Std. Glass", rate: 0.40, unit: "sq.inch" },
+    { id: "c2", name: "Non Reflective Glass", rate: 1.80, unit: "sq.inch" },
+    { id: "c3", name: "Museum UV Glass", rate: 31.25, unit: "sq.inch" },
+    { id: "c4", name: "Matte Lamination", rate: 0.50, unit: "sq.inch" },
+    { id: "c5", name: "Luster Lamination", rate: 0.50, unit: "sq.inch" },
+    { id: "c6", name: "Hot Luster Lamination", rate: 2.00, unit: "sq.inch" },
+  ],
+  frames: [
+    { id: "f1", name: "S50", rate: 10, unit: "running inch" },
+    { id: "f2", name: "S100", rate: 14, unit: "running inch" },
+    { id: "f3", name: "S150", rate: 16, unit: "running inch" },
+    { id: "f4", name: "S200", rate: 18, unit: "running inch" },
+    { id: "f5", name: "S300", rate: 22, unit: "running inch" },
+    { id: "f6", name: "S400", rate: 26, unit: "running inch" },
+    { id: "f7", name: "M50", rate: 12, unit: "running inch" },
+    { id: "f8", name: "M100", rate: 16, unit: "running inch" },
+    { id: "f9", name: "M150", rate: 20, unit: "running inch" },
+    { id: "f10", name: "M200", rate: 24, unit: "running inch" },
+    { id: "f11", name: "M300", rate: 30, unit: "running inch" },
+    { id: "f12", name: "M500", rate: 40, unit: "running inch" },
+  ],
+  frameColors: ["Black", "Brown", "Pine", "White", "Wood", "Rose Gold", "Gold"],
+  media: [
+    { id: "p1", name: "Enhanced Matte", rate: 400, unit: "sq.ft" },
+    { id: "p2", name: "Canvas", rate: 500, unit: "sq.ft" },
+    { id: "p3", name: "Photo Rag", rate: 650, unit: "sq.ft" },
+    { id: "p4", name: "Photo Matte", rate: 175, unit: "sq.ft" },
+    { id: "p5", name: "Photo Gloss", rate: 150, unit: "sq.ft" },
+  ],
+  backboards: [
+    { id: "b1", name: "Plain", rate: 0.10, unit: "sq.inch" },
+    { id: "b2", name: "4mm MDF", rate: 0.20, unit: "sq.inch" },
+    { id: "b3", name: "8mm MDF", rate: 0.40, unit: "sq.inch" },
+    { id: "b4", name: "Hardboard", rate: 0.50, unit: "sq.inch" },
+    { id: "b5", name: "MDF Black Coating", rate: 0.60, unit: "sq.inch" },
+  ],
+  canvasFrameRate: 125,
+  wastageInches: 6,
+  gstRate: 18,
+  shopName: "MeriDeewar",
+  shopAddress: "Flat No 6, Aditi Terrace, Near Pantaloons, Baner, Pune - 411045",
+  shopPhone: "",
+  shopGSTIN: "27AADCJ5659A1ZN",
+};
+
+// ─── Logo (embedded) ───
+const LOGO_B64 = "data:image/png;base64,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";
+
+// ─── Theme ───
+const T = {
+  bg: "#FDF8F1", card: "#FFFFFF", accent: "#1A3A6B", accentLight: "#00B4CC",
+  accentBg: "#EDF6F8", text: "#1A3A6B", textDim: "#8A8A8A", textMid: "#14305A",
+  border: "#E2E2DC", input: "#F9F7F3", success: "#3A8A5C", successBg: "#E8F5EC",
+  danger: "#D64545", dangerBg: "#FDE8E8", dark: "#14305A", receipt: "#FFFFF0",
+  navy: "#1A3A6B", darkNavy: "#14305A", gold: "#F5C300", sky: "#00B4CC", skyHover: "#0099B0",
+};
+
+// ─── Helpers ───
+const genId = () => Math.random().toString(36).substr(2, 9);
+const genBillNo = (bills) => {
+  const d = new Date();
+  const pfx = `MD-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}`;
+  const ct = bills.filter((b) => b.billNo?.startsWith(pfx)).length + 1;
+  return `${pfx}-${String(ct).padStart(4, "0")}`;
+};
+const round2 = (n) => Math.round(n * 100) / 100;
+const calcMediaSqFt = (w, h) => {
+  const raw = (w / 12) * (h / 12);
+  return Math.ceil(raw * 2) / 2;
+};
+const calcCanvasRunFt = (w, h, mult = 2) => (Math.ceil(w / 12) + Math.ceil(h / 12)) * mult;
+
+const EMPTY_ITEM = () => ({
+  id: genId(), width: "", height: "", mount: null, cover: null, frame: null,
+  frameColor: "", canvasFrame: false, canvasMultiplier: 2, media: null,
+  backboard: null, customItems: [], qty: 1, label: "",
+});
+
+// Calculate prices for a single item
+function calcItemPrices(item, settings) {
+  const W = Number(item.width) || 0;
+  const H = Number(item.height) || 0;
+  const sqIn = W * H;
+  const runIn = ((W + H) * 2) + settings.wastageInches;
+  const p = {};
+
+  if (item.mount) {
+    const m = settings.mounts.find((x) => x.id === item.mount);
+    if (m) p.mount = { name: m.name, rate: m.rate, area: sqIn, total: round2(sqIn * m.rate) };
+  }
+  if (item.cover) {
+    const c = settings.covers.find((x) => x.id === item.cover);
+    if (c) p.cover = { name: c.name, rate: c.rate, area: sqIn, total: round2(sqIn * c.rate) };
+  }
+  if (item.frame) {
+    const f = settings.frames.find((x) => x.id === item.frame);
+    if (f) p.frame = { name: f.name, rate: f.rate, runIn, total: round2(runIn * f.rate), color: item.frameColor };
+  }
+  if (item.canvasFrame && W && H) {
+    const rft = calcCanvasRunFt(W, H, item.canvasMultiplier);
+    p.canvasFrame = { runFt: rft, rate: settings.canvasFrameRate, multiplier: item.canvasMultiplier, total: round2(rft * settings.canvasFrameRate) };
+  }
+  if (item.media) {
+    const m = settings.media.find((x) => x.id === item.media);
+    if (m) { const sqft = calcMediaSqFt(W, H); p.media = { name: m.name, rate: m.rate, sqft, total: round2(sqft * m.rate) }; }
+  }
+  if (item.backboard) {
+    const b = settings.backboards.find((x) => x.id === item.backboard);
+    if (b) p.backboard = { name: b.name, rate: b.rate, area: sqIn, total: round2(sqIn * b.rate) };
+  }
+  const customTotal = item.customItems.reduce((s, ci) => s + (Number(ci.charge) || 0), 0);
+  if (customTotal > 0) p.custom = { items: item.customItems, total: customTotal };
+
+  let itemTotal = 0;
+  Object.values(p).forEach((v) => { itemTotal += v.total || 0; });
+  itemTotal = round2(itemTotal * (Number(item.qty) || 1));
+
+  return { prices: p, itemTotal, W, H, sqIn, runIn };
+}
+
+// ─── Fonts & CSS ───
+const font = "'Source Serif 4', 'Georgia', serif";
+const fontSans = "'DM Sans', 'Segoe UI', sans-serif";
+
+const css = `
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@400;600;700;800&family=DM+Sans:wght@400;500;600;700&display=swap');
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+input, select, textarea, button { font-family: ${fontSans}; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: ${T.sky} !important; }
+input[type=number]::-webkit-inner-spin-button { opacity: 1; }
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-thumb { background: ${T.border}; border-radius: 4px; }
+@keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+@keyframes slideUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
+.fadeIn { animation: fadeIn 0.3s ease both; }
+.slideUp { animation: slideUp 0.35s ease both; }
+`;
+
+const S = {
+  app: { fontFamily: fontSans, background: T.bg, color: T.text, minHeight: "100vh", maxWidth: 520, margin: "0 auto", position: "relative" },
+  header: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: T.navy, borderBottom: `4px solid transparent`, borderImage: `linear-gradient(to right, ${T.sky} 60%, ${T.gold} 40%) 1`, position: "sticky", top: 0, zIndex: 100 },
+  logo: { height: 40, objectFit: "contain" },
+  nav: { display: "flex", background: T.darkNavy, overflowX: "auto", gap: 0 },
+  navBtn: (a) => ({ flex: "0 0 auto", padding: "11px 14px", border: "none", borderBottom: a ? `2.5px solid ${T.gold}` : "2.5px solid transparent", background: "none", color: a ? T.gold : "rgba(255,255,255,0.7)", fontWeight: a ? 700 : 500, fontSize: 13, cursor: "pointer", whiteSpace: "nowrap", transition: "all 0.2s", fontFamily: fontSans }),
+  page: { padding: "16px 16px 120px" },
+  h2: { fontFamily: font, fontSize: 20, fontWeight: 700, color: T.navy, margin: "0 0 16px" },
+  label: { display: "block", fontSize: 11, fontWeight: 600, color: T.textDim, marginBottom: 5, textTransform: "uppercase", letterSpacing: 1 },
+  input: { width: "100%", padding: "10px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, background: T.input, color: T.text, fontSize: 14, fontFamily: fontSans, transition: "border-color 0.2s" },
+  select: { width: "100%", padding: "10px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, background: T.input, color: T.text, fontSize: 14, fontFamily: fontSans, appearance: "none", cursor: "pointer" },
+  card: { background: T.card, borderRadius: 12, padding: 16, border: `1px solid ${T.border}`, marginBottom: 12 },
+  sectionCard: { background: T.card, borderRadius: 10, padding: 12, border: `1px solid ${T.border}`, marginBottom: 8 },
+  chip: (sel) => ({ padding: "7px 12px", borderRadius: 20, border: `1.5px solid ${sel ? T.sky : T.border}`, background: sel ? T.accentBg : "transparent", color: sel ? T.navy : T.textDim, fontSize: 12, fontWeight: sel ? 600 : 400, cursor: "pointer", transition: "all 0.15s", whiteSpace: "nowrap", fontFamily: fontSans }),
+  chipRow: { display: "flex", flexWrap: "wrap", gap: 6 },
+  btn: (v = "primary", full = false) => ({
+    display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
+    padding: v === "sm" ? "8px 14px" : "12px 22px",
+    border: v === "ghost" ? `1.5px solid ${T.border}` : v === "danger" ? `1.5px solid ${T.danger}` : "none",
+    borderRadius: 10,
+    background: v === "primary" ? T.sky : v === "danger" ? T.dangerBg : v === "success" ? T.success : "transparent",
+    color: v === "primary" ? "#fff" : v === "danger" ? T.danger : v === "success" ? "#fff" : T.navy,
+    fontWeight: 600, fontSize: v === "sm" ? 12 : 14, cursor: "pointer", fontFamily: fontSans,
+    width: full ? "100%" : "auto", transition: "all 0.15s",
+  }),
+  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 },
+  grid3: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 },
+  divider: { border: "none", borderTop: `1px solid ${T.border}`, margin: "12px 0" },
+  badge: (c = T.navy) => ({ display: "inline-block", padding: "3px 10px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: c === T.success ? T.successBg : c === T.danger ? T.dangerBg : T.accentBg, color: c, textTransform: "uppercase", letterSpacing: 0.6 }),
+  priceTag: { fontFamily: font, fontWeight: 800, color: T.navy, fontSize: 22 },
+  empty: { textAlign: "center", padding: "50px 20px", color: T.textDim },
+};
+
+// ─── Icons ───
+const I = {
+  plus: (c = T.textDim, s = 18) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>,
+  trash: (c = T.danger, s = 16) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>,
+  back: (c = T.textDim, s = 20) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2.5" strokeLinecap="round"><polyline points="15 18 9 12 15 6" /></svg>,
+  search: (c = T.textDim, s = 18) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>,
+  receipt: (c = "#fff", s = 16) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round"><path d="M4 2v20l3-2 3 2 3-2 3 2 3-2 3 2V2l-3 2-3-2-3 2-3-2-3 2-3-2z" /><line x1="8" y1="8" x2="16" y2="8" /><line x1="8" y1="12" x2="16" y2="12" /><line x1="8" y1="16" x2="12" y2="16" /></svg>,
+  dl: (c = T.navy, s = 16) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>,
+  copy: (c = T.textDim, s = 16) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>,
+  wa: (s = 18) => <svg width={s} height={s} viewBox="0 0 24 24" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z" /></svg>,
+  print: (c = T.navy, s = 16) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>,
+};
+
+// ═══ MAIN APP WITH AUTH ═══
+function App() {
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+
+  const [tab, setTab] = useState("calc");
+  const [bills, setBills] = useState([]);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [loaded, setLoaded] = useState(false);
+  const [viewBill, setViewBill] = useState(null);
+  const [loginSessions, setLoginSessions] = useState([]);
+
+  // ── Get device info for session tracking ──
+  const getDeviceInfo = () => {
+    const ua = navigator.userAgent || "";
+    let browser = "Unknown", platform = "Unknown", device = "Unknown";
+    if (/Chrome/i.test(ua) && !/Edg/i.test(ua)) browser = "Chrome";
+    else if (/Safari/i.test(ua) && !/Chrome/i.test(ua)) browser = "Safari";
+    else if (/Firefox/i.test(ua)) browser = "Firefox";
+    else if (/Edg/i.test(ua)) browser = "Edge";
+    else if (/Opera|OPR/i.test(ua)) browser = "Opera";
+    if (/Android/i.test(ua)) { platform = "Android"; device = "Mobile"; }
+    else if (/iPhone|iPad/i.test(ua)) { platform = "iOS"; device = "Mobile"; }
+    else if (/Windows/i.test(ua)) { platform = "Windows"; device = "Desktop"; }
+    else if (/Mac/i.test(ua)) { platform = "macOS"; device = "Desktop"; }
+    else if (/Linux/i.test(ua)) { platform = "Linux"; device = "Desktop"; }
+    return { browser, platform, device };
+  };
+
+  // ── Log a login session ──
+  const logSession = async (userEmail, success, notes = "") => {
+    if (!isSupabaseConfigured) return;
+    const { browser, platform, device } = getDeviceInfo();
+    await supabase.insert("login_sessions", {
+      user_email: userEmail, user_id: supabase._userId || null,
+      browser, platform, device, success, notes,
+    });
+  };
+
+  // ── Check existing session ──
+  useEffect(() => {
+    (async () => {
+      if (!isSupabaseConfigured) { setUser({ id: "local", email: "local" }); setAuthLoading(false); return; }
+      try {
+        const t = await localGet("md-auth-token");
+        if (t) {
+          supabase._token = t;
+          const u = await supabase.getUser();
+          if (u?.id) {
+            // Verify user is in allowed list
+            const allowed = await supabase.select("allowed_users", { eq: { email: u.email, active: true } });
+            if (allowed?.length > 0) { setUser(u); }
+            else { supabase._token = null; await localSet("md-auth-token", null); }
+          } else { supabase._token = null; }
+        }
+      } catch {}
+      setAuthLoading(false);
+    })();
+  }, []);
+
+  // ── Load shared data after auth ──
+  useEffect(() => {
+    if (!user) return;
+    (async () => {
+      if (isSupabaseConfigured && user.id !== "local") {
+        // Shared bills — ALL bills visible to all users
+        const dbBills = await supabase.select("bills", { order: "created_at.desc" });
+        setBills(dbBills.map(b => ({ ...b, billNo: b.bill_no, customerName: b.customer_name, mobile: b.mobile, items: b.items, subtotal: Number(b.subtotal), gst: b.gst, gstAmt: Number(b.gst_amt), grandTotal: Number(b.grand_total), advance: Number(b.advance), balance: Number(b.balance), status: b.status, date: b.created_at, createdBy: b.created_by })));
+        // Shared settings
+        const dbSettings = await supabase.select("settings", { eq: { id: "global" } });
+        if (dbSettings?.[0]?.config) setSettings({ ...DEFAULT_SETTINGS, ...dbSettings[0].config });
+        // Load last 50 login sessions
+        const sessions = await supabase.select("login_sessions", { order: "login_at.desc", limit: 50 });
+        setLoginSessions(sessions || []);
+      } else {
+        const b = await localGet(BILLS_KEY);
+        const s = await localGet(SETTINGS_KEY);
+        if (b) setBills(b);
+        if (s) setSettings({ ...DEFAULT_SETTINGS, ...s });
+      }
+      setLoaded(true);
+    })();
+  }, [user]);
+
+  // ── Save settings when changed ──
+  useEffect(() => {
+    if (!loaded || !user) return;
+    if (isSupabaseConfigured && user.id !== "local") {
+      supabase.upsert("settings", { id: "global", config: settings, updated_at: new Date().toISOString(), updated_by: user.email });
+    } else {
+      localSet(SETTINGS_KEY, settings);
+    }
+  }, [settings, loaded]);
+
+  // ── Auth handler — login only, no signup ──
+  const handleAuth = async () => {
+    setAuthError(""); setAuthBusy(true);
+    try {
+      const res = await supabase.signIn(email.trim().toLowerCase(), password);
+      if (res.error || res.error_description || res.msg) {
+        // Log failed attempt
+        await logSession(email.trim().toLowerCase(), false, res.error_description || res.msg || "Failed login");
+        setAuthError(res.error_description || res.msg || res.error?.message || "Invalid email or password");
+      } else if (res.access_token) {
+        // Check if email is in allowed users list
+        const allowed = await supabase.select("allowed_users", { eq: { email: res.user?.email, active: true } });
+        if (!allowed || allowed.length === 0) {
+          await logSession(res.user?.email || email, false, "Not in allowed users list");
+          await supabase.signOut();
+          setAuthError("Access denied. Your email is not authorized to use this app.");
+          setAuthBusy(false);
+          return;
+        }
+        // Success — log session and proceed
+        await localSet("md-auth-token", res.access_token);
+        await logSession(res.user?.email || email, true, "Successful login");
+        setUser(res.user);
+      }
+    } catch (e) { setAuthError("Connection error. Check your internet."); }
+    setAuthBusy(false);
+  };
+
+  const handleLogout = async () => {
+    await supabase.signOut();
+    await localSet("md-auth-token", null);
+    setUser(null); setBills([]); setLoaded(false);
+  };
+
+  const addBill = async (bill) => {
+    const nb = { ...bill, billNo: genBillNo(bills), date: new Date().toISOString(), status: "unpaid", createdBy: user?.email || "local" };
+    if (isSupabaseConfigured && user?.id !== "local") {
+      const inserted = await supabase.insert("bills", {
+        bill_no: nb.billNo, customer_name: nb.customerName, mobile: nb.mobile,
+        items: nb.items, subtotal: nb.subtotal, gst: nb.gst, gst_amt: nb.gstAmt,
+        grand_total: nb.grandTotal, advance: nb.advance, balance: nb.balance,
+        status: nb.status, created_by: user.email,
+      });
+      if (inserted?.[0]) nb.id = inserted[0].id;
+    }
+    setBills((p) => [nb, ...p]);
+    if (!isSupabaseConfigured || user?.id === "local") localSet(BILLS_KEY, [nb, ...bills]);
+    return nb;
+  };
+
+  const updateBillStatus = async (billNo, newStatus) => {
+    setBills(p => p.map(b => b.billNo === billNo ? { ...b, status: newStatus } : b));
+    if (isSupabaseConfigured && user?.id !== "local") {
+      await supabase.update("bills", { bill_no: billNo }, { status: newStatus });
+    } else {
+      localSet(BILLS_KEY, bills.map(b => b.billNo === billNo ? { ...b, status: newStatus } : b));
+    }
+  };
+
+  const deleteBill = async (billNo) => {
+    setBills(p => p.filter(b => b.billNo !== billNo));
+    if (isSupabaseConfigured && user?.id !== "local") {
+      await supabase.delete("bills", { bill_no: billNo });
+    } else {
+      localSet(BILLS_KEY, bills.filter(b => b.billNo !== billNo));
+    }
+  };
+
+  // ── Loading ──
+  if (authLoading) return <div style={{ ...S.app, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}><p style={{ color: T.textDim }}>Loading MeriDeewar...</p></div>;
+
+  // ── Login Screen — No signup, login only ──
+  if (!user && isSupabaseConfigured) {
+    return (
+      <div style={S.app}>
+        <style>{css}</style>
+        <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px", background: `linear-gradient(160deg, ${T.navy} 0%, ${T.darkNavy} 100%)` }}>
+          <div style={{ textAlign: "center", marginBottom: 40 }}>
+            <img src={LOGO_B64} alt="MeriDeewar" style={{ height: 48, marginBottom: 8, borderRadius: 8 }} />
+            <div style={{ fontSize: 13, color: T.sky, letterSpacing: 2, textTransform: "uppercase" }}>Billing Studio</div>
+          </div>
+          <div style={{ background: T.card, borderRadius: 16, padding: 24, maxWidth: 380, margin: "0 auto", width: "100%" }}>
+            <h2 style={{ fontFamily: font, fontSize: 22, fontWeight: 700, color: T.navy, textAlign: "center", marginBottom: 6 }}>Welcome Back</h2>
+            <p style={{ textAlign: "center", fontSize: 12, color: T.textDim, marginBottom: 20 }}>Authorized personnel only</p>
+            {authError && <div style={{ background: T.dangerBg, color: T.danger, padding: "10px 14px", borderRadius: 8, fontSize: 13, marginBottom: 14 }}>{authError}</div>}
+            <label style={S.label}>Email</label>
+            <input type="email" style={S.input} placeholder="you@email.com" value={email} onChange={e => setEmail(e.target.value)} />
+            <div style={{ height: 12 }} />
+            <label style={S.label}>Password</label>
+            <input type="password" style={S.input} placeholder="Enter password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && handleAuth()} />
+            <div style={{ height: 16 }} />
+            <button style={S.btn("primary", true)} onClick={handleAuth} disabled={authBusy || !email || !password}>
+              {authBusy ? "Verifying..." : "Sign In"}
+            </button>
+          </div>
+          <div style={{ textAlign: "center", marginTop: 24, fontSize: 11, color: "rgba(255,255,255,0.4)" }}>
+            🔒 Max 5 authorized users • All logins tracked • Encrypted
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!loaded) return <div style={{ ...S.app, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}><p style={{ color: T.textDim }}>Loading bills...</p></div>;
+
+  const tabs = [["calc", "🖼 New Order"], ["bills", "📋 Bills"], ["export", "📊 Export"], ["settings", "⚙️ Settings"], ["security", "🔒 Security"]];
+
+  return (
+    <div style={S.app}>
+      <style>{css}</style>
+      <div style={S.header}>
+        <img src={LOGO_B64} alt="MeriDeewar" style={{ ...S.logo, borderRadius: 8 }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 10, color: T.sky, textTransform: "uppercase", letterSpacing: 1 }}>Billing Studio</div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: T.gold, fontFamily: font }}>{bills.length} Bills</div>
+          </div>
+          {isSupabaseConfigured && user?.id !== "local" && (
+            <button onClick={handleLogout} title="Logout" style={{ background: "rgba(255,255,255,0.1)", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer" }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            </button>
+          )}
+        </div>
+      </div>
+      <div style={S.nav}>
+        {tabs.map(([k, l]) => <button key={k} style={S.navBtn(tab === k)} onClick={() => { setTab(k); setViewBill(null); }}>{l}</button>)}
+      </div>
+      {tab === "calc" && <CalcPage settings={settings} addBill={addBill} />}
+      {tab === "bills" && !viewBill && <BillsList bills={bills} onView={setViewBill} />}
+      {tab === "bills" && viewBill && <BillDetail bill={viewBill} onBack={() => setViewBill(null)} bills={bills} setBills={setBills} settings={settings} updateBillStatus={updateBillStatus} deleteBill={deleteBill} />}
+      {tab === "export" && <ExportPage bills={bills} />}
+      {tab === "settings" && <SettingsPage settings={settings} setSettings={setSettings} />}
+      {tab === "security" && <SecurityPage loginSessions={loginSessions} user={user} />}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════
+// MULTI-ITEM CALCULATOR PAGE
+// ═══════════════════════════════════════════════════════
+function CalcPage({ settings, addBill }) {
+  const [items, setItems] = useState([EMPTY_ITEM()]);
+  const [activeItemIdx, setActiveItemIdx] = useState(0);
+  const [custName, setCustName] = useState("");
+  const [custMobile, setCustMobile] = useState("");
+  const [advance, setAdvance] = useState("");
+  const [gst, setGst] = useState(false);
+  const [step, setStep] = useState("build");
+  const [created, setCreated] = useState(null);
+
+  const updateItem = (idx, field, value) => {
+    setItems((prev) => prev.map((it, i) => i === idx ? { ...it, [field]: value } : it));
+  };
+
+  const addNewItem = () => {
+    const ni = EMPTY_ITEM();
+    setItems((p) => [...p, ni]);
+    setActiveItemIdx(items.length);
+  };
+
+  const removeItem = (idx) => {
+    if (items.length <= 1) return;
+    setItems((p) => p.filter((_, i) => i !== idx));
+    setActiveItemIdx((prev) => Math.min(prev, items.length - 2));
+  };
+
+  const duplicateItem = (idx) => {
+    const dup = { ...JSON.parse(JSON.stringify(items[idx])), id: genId(), label: items[idx].label ? items[idx].label + " (copy)" : "" };
+    setItems((p) => [...p.slice(0, idx + 1), dup, ...p.slice(idx + 1)]);
+    setActiveItemIdx(idx + 1);
+  };
+
+  const allCalcs = useMemo(() => items.map((it) => calcItemPrices(it, settings)), [items, settings]);
+  const subtotal = useMemo(() => round2(allCalcs.reduce((s, c) => s + c.itemTotal, 0)), [allCalcs]);
+  const gstAmt = gst ? round2(subtotal * settings.gstRate / 100) : 0;
+  const grandTotal = round2(subtotal + gstAmt);
+  const balance = round2(grandTotal - (Number(advance) || 0));
+
+  const handleCreate = async () => {
+    if (!custName.trim()) { alert("Please enter customer name"); return; }
+    if (!custMobile.trim() || custMobile.replace(/\D/g, "").length < 10) { alert("Please enter valid 10-digit mobile"); return; }
+    const validItems = items.filter((it) => (Number(it.width) || 0) > 0 && (Number(it.height) || 0) > 0);
+    if (!validItems.length) { alert("Please enter size for at least one item"); return; }
+
+    const billItems = items.map((it, idx) => {
+      const c = allCalcs[idx];
+      return { ...it, prices: c.prices, itemTotal: c.itemTotal, W: c.W, H: c.H, sqIn: c.sqIn, runIn: c.runIn };
+    }).filter((it) => it.W > 0 && it.H > 0);
+
+    const bill = await addBill({
+      customerName: custName.trim(), mobile: custMobile.trim(),
+      items: billItems, subtotal, gst, gstAmt, grandTotal,
+      advance: Number(advance) || 0, balance,
+    });
+    setCreated(bill);
+    setStep("done");
+  };
+
+  const reset = () => {
+    setItems([EMPTY_ITEM()]); setActiveItemIdx(0);
+    setCustName(""); setCustMobile(""); setAdvance(""); setGst(false);
+    setStep("build"); setCreated(null);
+  };
+
+  // ── Done ──
+  if (step === "done" && created) {
+    return (
+      <div style={S.page} className="slideUp">
+        <div style={{ textAlign: "center", padding: "24px 0" }}>
+          <div style={{ fontSize: 52, marginBottom: 8 }}>✅</div>
+          <h2 style={{ ...S.h2, marginBottom: 4 }}>Bill Created!</h2>
+          <p style={{ color: T.textDim, marginBottom: 20 }}>{created.billNo} • {created.items.length} item{created.items.length > 1 ? "s" : ""}</p>
+          <ThermalReceipt bill={created} settings={settings} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 20 }}>
+            <button style={S.btn("primary", true)} onClick={() => generatePDF(created, settings, "whatsapp")}>{I.wa(18)} Share PDF on WhatsApp</button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={{ ...S.btn("ghost"), flex: 1, borderColor: T.navy }} onClick={() => generatePDF(created, settings, "download")}>{I.dl(T.navy)} Save PDF</button>
+              <button style={{ ...S.btn("ghost"), flex: 1, borderColor: T.navy }} onClick={() => printReceipt(created, settings)}>{I.print()} Print</button>
+            </div>
+            <button style={S.btn("ghost", true)} onClick={reset}>+ Create New Order</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Customer step ──
+  if (step === "customer") {
+    const validItems = items.filter((_, idx) => allCalcs[idx].W > 0 && allCalcs[idx].H > 0);
+    return (
+      <div style={S.page} className="fadeIn">
+        <button onClick={() => setStep("build")} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 4, color: T.textDim, fontSize: 13, marginBottom: 16, fontFamily: fontSans }}>{I.back()} Back to Items</button>
+        <h2 style={S.h2}>Customer & Payment</h2>
+
+        <div style={S.card}>
+          <label style={S.label}>Customer Name *</label>
+          <input style={S.input} placeholder="Full name" value={custName} onChange={(e) => setCustName(e.target.value)} />
+          <div style={{ height: 12 }} />
+          <label style={S.label}>Mobile Number *</label>
+          <input type="tel" style={S.input} placeholder="10-digit mobile" maxLength={10} value={custMobile} onChange={(e) => setCustMobile(e.target.value.replace(/\D/g, ""))} />
+        </div>
+
+        <div style={S.card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <label style={{ ...S.label, margin: 0 }}>Apply GST (18%)</label>
+            <ToggleSwitch on={gst} onToggle={() => setGst(!gst)} />
+          </div>
+          <label style={S.label}>Advance Payment Received (₹)</label>
+          <input type="number" style={S.input} placeholder="0" value={advance} onChange={(e) => setAdvance(e.target.value)} />
+        </div>
+
+        <div style={S.card}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>Order Summary — {validItems.length} Item{validItems.length > 1 ? "s" : ""}</div>
+          {items.map((it, idx) => {
+            const c = allCalcs[idx];
+            if (!c.W || !c.H) return null;
+            return (
+              <div key={it.id} style={{ display: "flex", justifyContent: "space-between", padding: "8px 10px", background: T.bg, borderRadius: 8, marginBottom: 6, fontSize: 13 }}>
+                <span style={{ fontWeight: 600 }}>{it.label || `Frame/Print Item ${idx + 1}`} ({c.W}×{c.H}"){it.qty > 1 ? ` ×${it.qty}` : ""}</span>
+                <span style={{ color: T.navy, fontWeight: 700 }}>₹{c.itemTotal}</span>
+              </div>
+            );
+          })}
+          <hr style={S.divider} />
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14 }}><span>Subtotal</span><span style={{ fontWeight: 700 }}>₹{subtotal}</span></div>
+          {gst && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: T.textDim, marginTop: 4 }}><span>GST ({settings.gstRate}%)</span><span>₹{gstAmt}</span></div>}
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, marginTop: 8 }}><span style={{ fontWeight: 700 }}>Grand Total</span><span style={S.priceTag}>₹{grandTotal}</span></div>
+          {Number(advance) > 0 && <>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: T.success, marginTop: 6 }}><span>Advance Paid</span><span>- ₹{Number(advance)}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, fontWeight: 700, color: T.navy, marginTop: 4 }}><span>Balance Due</span><span>₹{balance}</span></div>
+          </>}
+        </div>
+
+        <button style={S.btn("primary", true)} onClick={handleCreate}>{I.receipt()} Generate Bill</button>
+      </div>
+    );
+  }
+
+  // ── Build step ──
+  return (
+    <div style={S.page}>
+      <h2 style={S.h2}>New Order</h2>
+
+      {/* Item Tabs */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, overflowX: "auto", paddingBottom: 4 }}>
+        {items.map((it, idx) => {
+          const c = allCalcs[idx];
+          const hasSize = c.W > 0 && c.H > 0;
+          return (
+            <button key={it.id} onClick={() => setActiveItemIdx(idx)} style={{
+              flex: "0 0 auto", padding: "8px 14px", borderRadius: 10,
+              border: activeItemIdx === idx ? `2px solid ${T.sky}` : `1.5px solid ${T.border}`,
+              background: activeItemIdx === idx ? T.accentBg : T.card,
+              color: activeItemIdx === idx ? T.navy : T.textMid,
+              fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: fontSans, transition: "all 0.15s",
+            }}>
+              <div>{it.label || `Item ${idx + 1}`}</div>
+              {hasSize && <div style={{ fontSize: 10, fontWeight: 400, marginTop: 2 }}>{c.W}×{c.H}" • ₹{c.itemTotal}</div>}
+            </button>
+          );
+        })}
+        <button onClick={addNewItem} style={{
+          flex: "0 0 auto", padding: "8px 14px", borderRadius: 10,
+          border: `1.5px dashed ${T.sky}`, background: "transparent",
+          color: T.navy, fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: fontSans,
+        }}>
+          + Add Item
+        </button>
+      </div>
+
+      {/* Active Item Editor */}
+      {items[activeItemIdx] && (
+        <ItemEditor
+          key={items[activeItemIdx].id}
+          item={items[activeItemIdx]}
+          idx={activeItemIdx}
+          calc={allCalcs[activeItemIdx]}
+          settings={settings}
+          updateItem={updateItem}
+          removeItem={removeItem}
+          duplicateItem={duplicateItem}
+          canRemove={items.length > 1}
+        />
+      )}
+
+      {/* Add Another Item Button (below the editor) */}
+      <button onClick={addNewItem} style={{ ...S.btn("ghost", true), marginTop: 8, borderStyle: "dashed" }}>
+        {I.plus(T.navy)} Add Another Artwork / Frame
+      </button>
+
+      {/* Total Bar */}
+      {subtotal > 0 && (
+        <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 520, background: T.dark, padding: "12px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", zIndex: 100, borderTop: `2px solid ${T.gold}` }}>
+          <div>
+            <div style={{ fontSize: 10, color: "#999", textTransform: "uppercase" }}>{items.filter((_, i) => allCalcs[i].W > 0).length} item{items.filter((_, i) => allCalcs[i].W > 0).length !== 1 ? "s" : ""} • Total</div>
+            <div style={{ fontFamily: font, fontSize: 22, fontWeight: 800, color: "#fff" }}>₹{subtotal}</div>
+          </div>
+          <button style={S.btn("primary")} onClick={() => {
+            if (!items.some((_, i) => allCalcs[i].W > 0 && allCalcs[i].H > 0)) { alert("Please enter size for at least one item"); return; }
+            setStep("customer");
+          }}>
+            Continue →
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Toggle Switch ───
+function ToggleSwitch({ on, onToggle }) {
+  return (
+    <button onClick={onToggle} style={{ width: 48, height: 26, borderRadius: 13, border: "none", background: on ? T.sky : T.border, cursor: "pointer", position: "relative", transition: "background 0.2s" }}>
+      <div style={{ width: 20, height: 20, borderRadius: 10, background: "#fff", position: "absolute", top: 3, left: on ? 25 : 3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+    </button>
+  );
+}
+
+// ═══════════════════════════════════════════════════════
+// SINGLE ITEM EDITOR
+// ═══════════════════════════════════════════════════════
+function ItemEditor({ item, idx, calc, settings, updateItem, removeItem, duplicateItem, canRemove }) {
+  const [expanded, setExpanded] = useState({});
+  const toggle = (s) => setExpanded((p) => ({ ...p, [s]: !p[s] }));
+  const upd = (f, v) => updateItem(idx, f, v);
+  const { prices, W, H, sqIn, runIn } = calc;
+
+  const Section = ({ title, id, children, selected }) => {
+    const open = expanded[id] !== false;
+    return (
+      <div style={{ ...S.sectionCard, borderColor: selected ? T.sky : T.border }}>
+        <div onClick={() => toggle(id)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontFamily: font, fontSize: 13, fontWeight: 700 }}>{title}</span>
+            {selected && <span style={S.badge(T.success)}>✓</span>}
+          </div>
+          <span style={{ fontSize: 16, color: T.textDim, transition: "transform 0.2s", transform: open ? "rotate(180deg)" : "none" }}>▾</span>
+        </div>
+        {open && <div style={{ marginTop: 10 }}>{children}</div>}
+      </div>
+    );
+  };
+
+  return (
+    <div className="fadeIn">
+      {/* Item header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <input style={{ ...S.input, flex: 1, fontWeight: 600 }} placeholder={`Item ${idx + 1} label (optional)`} value={item.label} onChange={(e) => upd("label", e.target.value)} />
+        <button onClick={() => duplicateItem(idx)} title="Duplicate" style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px", cursor: "pointer" }}>{I.copy(T.textMid)}</button>
+        {canRemove && <button onClick={() => removeItem(idx)} title="Remove" style={{ background: T.dangerBg, border: `1px solid ${T.danger}30`, borderRadius: 8, padding: "8px", cursor: "pointer" }}>{I.trash()}</button>}
+      </div>
+
+      {/* Size */}
+      <div style={{ ...S.card, background: T.accentBg, borderColor: T.sky, padding: 14 }}>
+        <label style={{ ...S.label, color: T.navy }}>Size (inches) *</label>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input type="number" style={{ ...S.input, flex: 1 }} placeholder="Width" value={item.width} onChange={(e) => upd("width", e.target.value)} />
+          <span style={{ fontWeight: 700, color: T.navy }}>×</span>
+          <input type="number" style={{ ...S.input, flex: 1 }} placeholder="Height" value={item.height} onChange={(e) => upd("height", e.target.value)} />
+          <div style={{ flex: 0.6 }}>
+            <input type="number" min="1" style={{ ...S.input, textAlign: "center" }} placeholder="Qty" value={item.qty} onChange={(e) => upd("qty", e.target.value)} />
+          </div>
+        </div>
+        {W > 0 && H > 0 && (
+          <div style={{ marginTop: 8, display: "flex", gap: 10, fontSize: 11, color: T.textMid }}>
+            <span>Area: <b>{sqIn} sq.in</b></span>
+            <span>Run: <b>{runIn}"</b></span>
+            <span>Sq.ft: <b>{calcMediaSqFt(W, H)}</b></span>
+          </div>
+        )}
+      </div>
+
+      {/* Mount */}
+      <Section title="🖼 Mount" id="mount" selected={!!item.mount}>
+        <div style={S.chipRow}>
+          {settings.mounts.map((m) => <button key={m.id} style={S.chip(item.mount === m.id)} onClick={() => upd("mount", item.mount === m.id ? null : m.id)}>{m.name} <span style={{ fontSize: 10, opacity: 0.7 }}>₹{m.rate}</span></button>)}
+        </div>
+        {prices.mount && <PriceLine left={`${prices.mount.area} sq.in × ₹${prices.mount.rate}`} right={`₹${prices.mount.total}`} />}
+      </Section>
+
+      {/* Cover */}
+      <Section title="🪟 Cover" id="cover" selected={!!item.cover}>
+        <div style={S.chipRow}>
+          {settings.covers.map((c) => <button key={c.id} style={S.chip(item.cover === c.id)} onClick={() => upd("cover", item.cover === c.id ? null : c.id)}>{c.name} <span style={{ fontSize: 10, opacity: 0.7 }}>₹{c.rate}</span></button>)}
+        </div>
+        {prices.cover && <PriceLine left={`${prices.cover.area} sq.in × ₹${prices.cover.rate}`} right={`₹${prices.cover.total}`} />}
+      </Section>
+
+      {/* Frame */}
+      <Section title="🪵 Frame" id="frame" selected={!!item.frame}>
+        <div style={S.chipRow}>
+          {settings.frames.map((f) => <button key={f.id} style={S.chip(item.frame === f.id)} onClick={() => upd("frame", item.frame === f.id ? null : f.id)}>{f.name} <span style={{ fontSize: 10, opacity: 0.7 }}>₹{f.rate}</span></button>)}
+        </div>
+        {prices.frame && <div style={{ marginTop: 8, padding: "6px 10px", background: T.accentBg, borderRadius: 8, fontSize: 11 }}>
+          <div>({W}+{H})×2+{settings.wastageInches}" = <b>{runIn}"</b> × ₹{prices.frame.rate}</div>
+          <div style={{ fontWeight: 700, color: T.navy, fontSize: 13, marginTop: 2 }}>₹{prices.frame.total}{item.frameColor ? ` • ${item.frameColor}` : ""}</div>
+        </div>}
+      </Section>
+
+      {/* Frame Color — always visible */}
+      <Section title="🎨 Frame Colour" id="frameColor" selected={!!item.frameColor}>
+        <div style={S.chipRow}>
+          {settings.frameColors.map((c) => <button key={c} style={S.chip(item.frameColor === c)} onClick={() => upd("frameColor", item.frameColor === c ? "" : c)}>{c}</button>)}
+        </div>
+        {item.frameColor && <div style={{ marginTop: 8, fontSize: 13, color: T.navy, fontWeight: 600 }}>Selected: {item.frameColor} (no extra charge)</div>}
+      </Section>
+
+      {/* Canvas Frame */}
+      <Section title="🎨 Canvas Frame" id="canvas" selected={item.canvasFrame}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+          <ToggleSwitch on={item.canvasFrame} onToggle={() => upd("canvasFrame", !item.canvasFrame)} />
+          <span style={{ fontSize: 13 }}>Add Canvas Stretching</span>
+        </div>
+        {item.canvasFrame && <>
+          <label style={S.label}>Multiplier (×2 normal, ×3/×4 large)</label>
+          <div style={{ ...S.chipRow, marginBottom: 6 }}>
+            {[2, 3, 4].map((n) => <button key={n} style={S.chip(item.canvasMultiplier === n)} onClick={() => upd("canvasMultiplier", n)}>×{n}</button>)}
+          </div>
+          {prices.canvasFrame && <div style={{ padding: "6px 10px", background: T.accentBg, borderRadius: 8, fontSize: 11 }}>
+            <div>⌈{W}/12⌉+⌈{H}/12⌉ = {Math.ceil(W/12)+Math.ceil(H/12)}ft × {item.canvasMultiplier} = <b>{prices.canvasFrame.runFt}ft</b> × ₹{settings.canvasFrameRate}</div>
+            <div style={{ fontWeight: 700, color: T.navy, fontSize: 13, marginTop: 2 }}>₹{prices.canvasFrame.total}</div>
+          </div>}
+        </>}
+      </Section>
+
+      {/* Media */}
+      <Section title="🖨 Media (Print)" id="media" selected={!!item.media}>
+        <div style={S.chipRow}>
+          {settings.media.map((m) => <button key={m.id} style={S.chip(item.media === m.id)} onClick={() => upd("media", item.media === m.id ? null : m.id)}>{m.name} <span style={{ fontSize: 10, opacity: 0.7 }}>₹{m.rate}</span></button>)}
+        </div>
+        {prices.media && <div style={{ marginTop: 8, padding: "6px 10px", background: T.accentBg, borderRadius: 8, fontSize: 11 }}>
+          <div>{W}×{H}in → <b>{prices.media.sqft} sq.ft</b> × ₹{prices.media.rate}</div>
+          <div style={{ fontWeight: 700, color: T.navy, fontSize: 13, marginTop: 2 }}>₹{prices.media.total}</div>
+        </div>}
+      </Section>
+
+      {/* Backboard */}
+      <Section title="📋 Backboard" id="backboard" selected={!!item.backboard}>
+        <div style={S.chipRow}>
+          {settings.backboards.map((b) => <button key={b.id} style={S.chip(item.backboard === b.id)} onClick={() => upd("backboard", item.backboard === b.id ? null : b.id)}>{b.name} <span style={{ fontSize: 10, opacity: 0.7 }}>₹{b.rate}</span></button>)}
+        </div>
+        {prices.backboard && <PriceLine left={`${sqIn} sq.in × ₹${prices.backboard.rate}`} right={`₹${prices.backboard.total}`} />}
+      </Section>
+
+      {/* Custom */}
+      <Section title="✏️ Custom Items" id="custom" selected={item.customItems.length > 0}>
+        {item.customItems.map((ci, cidx) => (
+          <div key={cidx} style={{ display: "flex", gap: 5, marginBottom: 6, alignItems: "center" }}>
+            <input style={{ ...S.input, flex: 2, padding: "8px 10px", fontSize: 12 }} placeholder="Desc" value={ci.desc} onChange={(e) => { const a = [...item.customItems]; a[cidx].desc = e.target.value; upd("customItems", a); }} />
+            <input style={{ ...S.input, flex: 0.6, padding: "8px 10px", fontSize: 12 }} placeholder="Size" value={ci.size} onChange={(e) => { const a = [...item.customItems]; a[cidx].size = e.target.value; upd("customItems", a); }} />
+            <input type="number" style={{ ...S.input, flex: 0.7, padding: "8px 10px", fontSize: 12 }} placeholder="₹" value={ci.charge} onChange={(e) => { const a = [...item.customItems]; a[cidx].charge = e.target.value; upd("customItems", a); }} />
+            <button onClick={() => upd("customItems", item.customItems.filter((_, i) => i !== cidx))} style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>{I.trash(T.danger, 14)}</button>
+          </div>
+        ))}
+        <button style={{ ...S.btn("ghost"), fontSize: 12, padding: "7px 12px" }} onClick={() => upd("customItems", [...item.customItems, { desc: "", size: "", charge: "" }])}>{I.plus(T.navy, 14)} Add Custom</button>
+      </Section>
+
+      {/* Item total */}
+      {calc.itemTotal > 0 && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: T.card, borderRadius: 10, border: `1.5px solid ${T.sky}`, marginTop: 4, marginBottom: 8 }}>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>{item.label || `Item ${idx + 1}`} Total {item.qty > 1 ? `(×${item.qty})` : ""}</span>
+          <span style={{ ...S.priceTag, fontSize: 20 }}>₹{calc.itemTotal}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PriceLine({ left, right }) {
+  return (
+    <div style={{ marginTop: 8, padding: "6px 10px", background: T.accentBg, borderRadius: 8, fontSize: 12, display: "flex", justifyContent: "space-between" }}>
+      <span>{left}</span><span style={{ fontWeight: 700, color: T.navy }}>{right}</span>
+    </div>
+  );
+}
+
+// ═══ THERMAL RECEIPT — Multi-Item ═══
+function ThermalReceipt({ bill, settings }) {
+  const s = {
+    wrap: { width: 300, margin: "0 auto", background: T.receipt, fontFamily: "'Courier New', monospace", fontSize: 11, color: "#111", padding: "16px 12px", border: `1px dashed #ccc`, borderRadius: 4 },
+    center: { textAlign: "center" },
+    line: { borderTop: "1px dashed #999", margin: "6px 0" },
+    row: { display: "flex", justifyContent: "space-between", padding: "1px 0", fontSize: 10 },
+    bold: { fontWeight: 700 },
+    detail: { fontSize: 8, color: "#666", paddingLeft: 4, lineHeight: 1.5 },
+  };
+
+  // Build material details string for each item
+  const getItemDetails = (item) => {
+    const parts = [];
+    if (item.prices?.mount) parts.push("Mount: " + item.prices.mount.name);
+    if (item.prices?.cover) parts.push("Cover: " + item.prices.cover.name);
+    if (item.prices?.frame) parts.push("Frame: " + item.prices.frame.name + (item.frameColor ? " (" + item.frameColor + ")" : ""));
+    if (item.frameColor && !item.prices?.frame) parts.push("Colour: " + item.frameColor);
+    if (item.prices?.canvasFrame) parts.push("Canvas: ×" + (item.canvasMultiplier || 2));
+    if (item.prices?.media) parts.push("Print: " + item.prices.media.name);
+    if (item.prices?.backboard) parts.push("Back: " + item.prices.backboard.name);
+    if (item.prices?.custom) item.prices.custom.items.forEach(c => { if (c.desc) parts.push(c.desc); });
+    return parts;
+  };
+
+  return (
+    <div style={s.wrap}>
+      <div style={s.center}>
+        <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: 1 }}>{settings.shopName || "MeriDeewar"}</div>
+        <div style={{ fontSize: 8, marginTop: 2 }}>{settings.shopAddress}</div>
+        {settings.shopGSTIN && <div style={{ fontSize: 8 }}>GSTIN: {settings.shopGSTIN}</div>}
+      </div>
+      <div style={s.line} />
+      <div style={s.row}><span>Bill No:</span><span style={s.bold}>{bill.billNo}</span></div>
+      <div style={s.row}><span>Date:</span><span>{new Date(bill.date).toLocaleDateString("en-IN")}</span></div>
+      <div style={s.row}><span>Customer:</span><span style={s.bold}>{bill.customerName}</span></div>
+      <div style={s.row}><span>Mobile:</span><span>{bill.mobile}</span></div>
+      <div style={s.line} />
+      {bill.items.map((item, i) => {
+        const details = getItemDetails(item);
+        return (
+          <div key={i} style={{ marginBottom: 6 }}>
+            <div style={s.row}>
+              <span style={s.bold}>{item.label || `Item ${i + 1}`} ({item.W}×{item.H}"){item.qty > 1 ? ` ×${item.qty}` : ""}</span>
+              <span style={s.bold}>₹{item.itemTotal}</span>
+            </div>
+            {details.length > 0 && (
+              <div style={s.detail}>{details.join(" | ")}</div>
+            )}
+          </div>
+        );
+      })}
+      <div style={s.line} />
+      <div style={{ ...s.row, fontSize: 11 }}><span>Subtotal</span><span style={s.bold}>₹{bill.subtotal}</span></div>
+      {bill.gst && <div style={s.row}><span>GST ({settings.gstRate}%)</span><span>₹{bill.gstAmt}</span></div>}
+      <div style={{ ...s.row, fontSize: 13, fontWeight: 700, margin: "4px 0" }}><span>TOTAL</span><span>₹{bill.grandTotal}</span></div>
+      {bill.advance > 0 && <>
+        <div style={{ ...s.row, color: "#3A8A5C" }}><span>Advance Paid</span><span>-₹{bill.advance}</span></div>
+        <div style={{ ...s.row, fontSize: 12, fontWeight: 700 }}><span>BALANCE DUE</span><span>₹{bill.balance}</span></div>
+      </>}
+      <div style={s.line} />
+      <div style={{ ...s.center, fontSize: 9, marginTop: 4 }}>Thank you for choosing MeriDeewar!</div>
+      <div style={{ ...s.center, fontSize: 8, color: "#999" }}>www.merideewar.com</div>
+    </div>
+  );
+}
+
+// ─── WhatsApp Share ───
+function shareWhatsApp(bill, settings) {
+  let m = `*${settings.shopName || "MeriDeewar"}*\n${settings.shopAddress}\n`;
+  if (settings.shopGSTIN) m += `GSTIN: ${settings.shopGSTIN}\n`;
+  m += `\n*Bill: ${bill.billNo}*\nDate: ${new Date(bill.date).toLocaleDateString("en-IN")}\nCustomer: ${bill.customerName}\n\n`;
+  bill.items.forEach((item, i) => {
+    m += `${item.label || `Item ${i + 1}`} (${item.W}×${item.H}")${item.qty > 1 ? ` ×${item.qty}` : ""} — ₹${item.itemTotal}\n`;
+    const parts = [];
+    if (item.prices?.mount) parts.push(item.prices.mount.name);
+    if (item.prices?.cover) parts.push(item.prices.cover.name);
+    if (item.prices?.frame) parts.push(item.prices.frame.name + (item.frameColor ? " (" + item.frameColor + ")" : ""));
+    if (item.prices?.canvasFrame) parts.push("Canvas ×" + (item.canvasMultiplier || 2));
+    if (item.prices?.media) parts.push(item.prices.media.name);
+    if (item.prices?.backboard) parts.push(item.prices.backboard.name);
+    if (parts.length > 0) m += `  _${parts.join(" | ")}_\n`;
+  });
+  m += `*Subtotal: ₹${bill.subtotal}*\n`;
+  if (bill.gst) m += `GST (${settings.gstRate}%): ₹${bill.gstAmt}\n`;
+  m += `*TOTAL: ₹${bill.grandTotal}*\n`;
+  if (bill.advance > 0) { m += `Advance: ₹${bill.advance}\n*Balance: ₹${bill.balance}*\n`; }
+  m += `\nThank you! 🙏\nwww.merideewar.com`;
+  const ph = bill.mobile.replace(/\D/g, "");
+  window.open(`https://wa.me/${ph.startsWith("91") ? ph : `91${ph}`}?text=${encodeURIComponent(m)}`, "_blank");
+}
+
+// ─── Build receipt HTML (used by both PDF and Print) ───
+function buildReceiptHTML(bill, settings) {
+  const d = new Date(bill.date).toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
+  const t = new Date(bill.date).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+
+  let itemsHTML = "";
+  (bill.items || []).forEach((item, i) => {
+    const label = item.label || ("Item " + (i + 1));
+    const size = item.W + "×" + item.H + '"';
+    const qty = item.qty > 1 ? " ×" + item.qty : "";
+    const parts = [];
+    if (item.prices?.mount) parts.push(item.prices.mount.name);
+    if (item.prices?.cover) parts.push(item.prices.cover.name);
+    if (item.prices?.frame) parts.push(item.prices.frame.name + (item.frameColor ? " (" + item.frameColor + ")" : ""));
+    if (item.prices?.canvasFrame) parts.push("Canvas ×" + (item.canvasMultiplier || 2));
+    if (item.prices?.media) parts.push(item.prices.media.name);
+    if (item.prices?.backboard) parts.push(item.prices.backboard.name);
+    itemsHTML += '<div class="row"><span class="bold">' + label + " (" + size + ")" + qty + '</span><span class="bold">₹' + item.itemTotal + "</span></div>";
+    if (parts.length > 0) itemsHTML += '<div class="detail">' + parts.join(" | ") + "</div>";
+  });
+
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+    '<title>' + bill.billNo + '</title>' +
+    '<style>' +
+    '@page { size: 80mm auto; margin: 2mm; }' +
+    '* { margin:0; padding:0; box-sizing:border-box; }' +
+    'body { font-family: "Courier New", monospace; font-size:11px; color:#111; width:72mm; margin:0 auto; padding:6px 4px; }' +
+    '.center { text-align:center; }' +
+    '.bold { font-weight:700; }' +
+    '.dash { border-top:1px dashed #999; margin:5px 0; }' +
+    '.row { display:flex; justify-content:space-between; padding:2px 0; font-size:10px; }' +
+    '.row-lg { display:flex; justify-content:space-between; padding:3px 0; font-size:12px; font-weight:700; }' +
+    '.detail { font-size:7.5px; color:#777; padding:0 0 4px 2px; }' +
+    '.shop-name { font-size:15px; font-weight:800; letter-spacing:1px; }' +
+    '.shop-addr { font-size:7.5px; margin-top:1px; color:#444; }' +
+    '.gstin { font-size:7.5px; color:#666; }' +
+    '.footer { font-size:7.5px; color:#999; margin-top:3px; }' +
+    '.green { color:#2d7a46; }' +
+    '.status { display:inline-block; padding:2px 8px; border-radius:10px; font-size:8px; font-weight:700; text-transform:uppercase; }' +
+    '.status-paid { background:#e8f5ec; color:#2d7a46; }' +
+    '.status-unpaid { background:#fde8e8; color:#d64545; }' +
+    '</style></head><body>' +
+    '<div class="center"><div class="shop-name">' + (settings.shopName || "MeriDeewar") + '</div>' +
+    '<div class="shop-addr">' + (settings.shopAddress || "") + '</div>' +
+    (settings.shopPhone ? '<div class="shop-addr">Ph: ' + settings.shopPhone + '</div>' : '') +
+    (settings.shopGSTIN ? '<div class="gstin">GSTIN: ' + settings.shopGSTIN + '</div>' : '') +
+    '</div>' +
+    '<div class="dash"></div>' +
+    '<div class="row"><span>Bill No:</span><span class="bold">' + bill.billNo + '</span></div>' +
+    '<div class="row"><span>Date:</span><span>' + d + ' ' + t + '</span></div>' +
+    '<div class="row"><span>Customer:</span><span class="bold">' + bill.customerName + '</span></div>' +
+    '<div class="row"><span>Mobile:</span><span>' + bill.mobile + '</span></div>' +
+    '<div class="dash"></div>' +
+    itemsHTML +
+    '<div class="dash"></div>' +
+    '<div class="row"><span>Subtotal</span><span class="bold">₹' + bill.subtotal + '</span></div>' +
+    (bill.gst ? '<div class="row"><span>GST (' + settings.gstRate + '%)</span><span>₹' + bill.gstAmt + '</span></div>' : '') +
+    '<div class="dash"></div>' +
+    '<div class="row-lg"><span>TOTAL</span><span>₹' + bill.grandTotal + '</span></div>' +
+    (bill.advance > 0 ? '<div class="dash"></div><div class="row green"><span>Advance Paid</span><span>-₹' + bill.advance + '</span></div><div class="row-lg"><span>BALANCE DUE</span><span>₹' + bill.balance + '</span></div>' : '') +
+    '<div class="dash"></div>' +
+    '<div class="center" style="margin:3px 0;"><span class="status ' + (bill.status === "paid" ? "status-paid" : "status-unpaid") + '">' + (bill.status === "paid" ? "✓ PAID" : "UNPAID") + '</span></div>' +
+    '<div class="dash"></div>' +
+    '<div class="center footer">Thank you for choosing ' + (settings.shopName || "MeriDeewar") + '!</div>' +
+    '<div class="center footer">www.merideewar.com</div>' +
+    '</body></html>';
+}
+
+// ─── Print Receipt (3-inch thermal printer) ───
+function printReceipt(bill, settings) {
+  const html = buildReceiptHTML(bill, settings);
+  const printWindow = window.open("", "_blank", "width=320,height=600");
+  if (printWindow) {
+    printWindow.document.write(html);
+    printWindow.document.close();
+    setTimeout(() => { printWindow.print(); }, 300);
+  } else {
+    alert("Please allow popups to print the receipt.");
+  }
+}
+
+// ─── Generate PDF (thermal receipt style) ───
+async function generatePDF(bill, settings, mode) {
+  // Load html2canvas + jsPDF dynamically
+  if (!window.html2canvas) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+      s.onload = resolve; s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+  if (!window.jspdf) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+      s.onload = resolve; s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+
+  // Render receipt HTML in a hidden iframe
+  const iframe = document.createElement("iframe");
+  iframe.style.cssText = "position:fixed;left:-9999px;top:0;width:302px;height:auto;border:none;";
+  document.body.appendChild(iframe);
+  const html = buildReceiptHTML(bill, settings);
+  iframe.contentDocument.open();
+  iframe.contentDocument.write(html);
+  iframe.contentDocument.close();
+
+  // Wait for render
+  await new Promise(r => setTimeout(r, 500));
+
+  // Capture as image
+  const canvas = await window.html2canvas(iframe.contentDocument.body, {
+    scale: 2, width: 302, backgroundColor: "#ffffff", useCORS: true,
+  });
+  document.body.removeChild(iframe);
+
+  // Create PDF with exact receipt dimensions
+  const { jsPDF } = window.jspdf;
+  const imgW = 226; // 80mm in points
+  const imgH = (canvas.height / canvas.width) * imgW;
+  const doc = new jsPDF({ unit: "pt", format: [imgW, imgH + 10] });
+  doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 5, imgW, imgH);
+
+  const filename = (bill.billNo || "bill").replace(/[^a-zA-Z0-9-]/g, "_") + ".pdf";
+  const blob = doc.output("blob");
+  const file = new File([blob], filename, { type: "application/pdf" });
+
+  // Mode: "whatsapp" = share on WhatsApp, "share" = native share, "download" = save
+  if (mode === "whatsapp") {
+    // Try native share with WhatsApp
+    try {
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: bill.billNo,
+          text: "Bill " + bill.billNo + " - Rs." + bill.grandTotal + " | " + bill.customerName,
+        });
+        return;
+      }
+    } catch (e) { /* fall through */ }
+    // Fallback: download PDF + open WhatsApp text
+    doc.save(filename);
+    const ph = (bill.mobile || "").replace(/\D/g, "");
+    const msg = "Hi " + bill.customerName + ", here is your bill " + bill.billNo + " for Rs." + bill.grandTotal + ". Please find the PDF receipt attached. Thank you! - " + (settings.shopName || "MeriDeewar");
+    setTimeout(() => {
+      window.open("https://wa.me/" + (ph.startsWith("91") ? ph : "91" + ph) + "?text=" + encodeURIComponent(msg), "_blank");
+    }, 500);
+  } else if (mode === "share") {
+    try {
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: bill.billNo });
+        return;
+      }
+    } catch (e) { /* fall through */ }
+    doc.save(filename);
+  } else {
+    doc.save(filename);
+  }
+}
+
+// ═══ BILLS LIST ═══
+function BillsList({ bills, onView }) {
+  const [search, setSearch] = useState("");
+  const filtered = bills.filter(b => (b.customerName||"").toLowerCase().includes(search.toLowerCase()) || (b.billNo||"").toLowerCase().includes(search.toLowerCase()) || (b.mobile||"").includes(search));
+  return (
+    <div style={S.page}>
+      <div style={{ position: "relative", marginBottom: 14 }}>
+        <input style={{ ...S.input, paddingLeft: 36 }} placeholder="Search bills..." value={search} onChange={e => setSearch(e.target.value)} />
+        <div style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)" }}>{I.search()}</div>
+      </div>
+      {filtered.length === 0 && <div style={S.empty}><p>{bills.length ? "No matching bills" : "No bills yet!"}</p></div>}
+      {filtered.map(bill => (
+        <div key={bill.billNo} style={{ ...S.card, cursor: "pointer" }} onClick={() => onView(bill)} className="fadeIn">
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 15 }}>{bill.customerName}</div>
+              <div style={{ fontSize: 11, color: T.textDim }}>{bill.billNo} • {new Date(bill.date).toLocaleDateString("en-IN")}</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontFamily: font, fontWeight: 800, color: T.navy, fontSize: 17 }}>₹{bill.grandTotal}</div>
+              <span style={S.badge(bill.status === "paid" ? T.success : T.navy)}>{bill.status}</span>
+            </div>
+          </div>
+          <div style={{ marginTop: 6, fontSize: 12, color: T.textDim }}>
+            {bill.items?.length || 1} item{(bill.items?.length||1) > 1 ? "s" : ""} • {bill.items?.map(it => `${it.W}×${it.H}"`).join(", ")}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ═══ BILL DETAIL ═══
+function BillDetail({ bill, onBack, bills, setBills, settings, updateBillStatus, deleteBill }) {
+  const togglePaid = () => {
+    const newStatus = bill.status === "paid" ? "unpaid" : "paid";
+    if (updateBillStatus) updateBillStatus(bill.billNo, newStatus);
+    else { setBills(p => p.map(b => b.billNo === bill.billNo ? { ...b, status: newStatus } : b)); }
+    bill.status = newStatus;
+  };
+  const handleDelete = () => {
+    if (confirm("Delete this bill?")) {
+      if (deleteBill) deleteBill(bill.billNo);
+      else setBills(p => p.filter(b => b.billNo !== bill.billNo));
+      onBack();
+    }
+  };
+  return (
+    <div style={S.page} className="fadeIn">
+      <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 4, color: T.textDim, fontSize: 13, marginBottom: 12, fontFamily: fontSans }}>{I.back()} All Bills</button>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
+        <div><h2 style={{ ...S.h2, marginBottom: 2 }}>{bill.billNo}</h2><p style={{ fontSize: 12, color: T.textDim, margin: 0 }}>{new Date(bill.date).toLocaleDateString("en-IN", { weekday: "short", year: "numeric", month: "short", day: "numeric" })}</p></div>
+        <button onClick={togglePaid} style={{ ...S.badge(bill.status === "paid" ? T.success : T.navy), cursor: "pointer", border: "none", padding: "6px 14px", fontSize: 12 }}>{bill.status === "paid" ? "✓ PAID" : "UNPAID"}</button>
+      </div>
+      <ThermalReceipt bill={bill} settings={settings} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 16 }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={{ ...S.btn("primary"), flex: 1 }} onClick={() => generatePDF(bill, settings, "whatsapp")}>{I.wa(16)} PDF to WhatsApp</button>
+          <button style={{ ...S.btn("ghost"), flex: 0.7, borderColor: T.sky, color: T.sky }} onClick={() => shareWhatsApp(bill, settings)}>{I.wa(16)} Text</button>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={{ ...S.btn("ghost"), flex: 1, borderColor: T.navy }} onClick={() => generatePDF(bill, settings, "download")}>{I.dl(T.navy)} Save PDF</button>
+          <button style={{ ...S.btn("ghost"), flex: 1, borderColor: T.navy }} onClick={() => printReceipt(bill, settings)}>{I.print()} Print</button>
+          <button style={{ ...S.btn("danger"), flex: 0.5 }} onClick={handleDelete}>{I.trash(T.danger)}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══ EXPORT ═══
+function ExportPage({ bills }) {
+  const now = new Date();
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [year, setYear] = useState(now.getFullYear());
+  const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const filtered = bills.filter(b => { const d = new Date(b.date); return d.getMonth()+1 === month && d.getFullYear() === year; });
+  const totalRev = filtered.reduce((s, b) => s + (b.grandTotal||0), 0);
+  const paidCount = filtered.filter(b => b.status === "paid").length;
+
+  const doExport = () => {
+    if (!filtered.length) return;
+    const rows = [["Bill No","Date","Customer","Mobile","Item#","Label","Size","Qty","Mount","Cover","Frame","Frame Color","Canvas Frame","Media","Backboard","Custom","Item Total","Subtotal","GST","Grand Total","Advance","Balance","Status"]];
+    filtered.forEach(b => {
+      (b.items||[]).forEach((it, i) => {
+        rows.push([
+          i===0?b.billNo:"", i===0?new Date(b.date).toLocaleDateString("en-IN"):"",
+          i===0?b.customerName:"", i===0?b.mobile:"",
+          i+1, it.label||`Item ${i+1}`, `${it.W}x${it.H}`, it.qty,
+          it.prices.mount?`${it.prices.mount.name} (₹${it.prices.mount.total})`:"-",
+          it.prices.cover?`${it.prices.cover.name} (₹${it.prices.cover.total})`:"-",
+          it.prices.frame?`${it.prices.frame.name} (₹${it.prices.frame.total})`:"-",
+          it.frameColor||"-",
+          it.prices.canvasFrame?`₹${it.prices.canvasFrame.total}`:"-",
+          it.prices.media?`${it.prices.media.name} (₹${it.prices.media.total})`:"-",
+          it.prices.backboard?`${it.prices.backboard.name} (₹${it.prices.backboard.total})`:"-",
+          it.prices.custom?it.prices.custom.items.map(c=>`${c.desc}:₹${c.charge}`).join("; "):"-",
+          it.itemTotal, i===0?b.subtotal:"", i===0?(b.gstAmt||0):"", i===0?b.grandTotal:"",
+          i===0?(b.advance||0):"", i===0?(b.balance||b.grandTotal):"", i===0?b.status:"",
+        ]);
+      });
+    });
+    let csv = "\uFEFF"; rows.forEach(r => { csv += r.map(v => `"${v}"`).join(",") + "\n"; });
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `MeriDeewar_Bills_${year}_${String(month).padStart(2,"0")}.csv`;
+    a.click();
+  };
+
+  return (
+    <div style={S.page}>
+      <h2 style={S.h2}>Export Bills</h2>
+      <div style={S.grid2}>
+        <div><label style={S.label}>Month</label><select style={S.select} value={month} onChange={e => setMonth(Number(e.target.value))}>{months.map((m,i)=><option key={i} value={i+1}>{m}</option>)}</select></div>
+        <div><label style={S.label}>Year</label><select style={S.select} value={year} onChange={e => setYear(Number(e.target.value))}>{[2024,2025,2026,2027].map(y=><option key={y} value={y}>{y}</option>)}</select></div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, margin: "14px 0" }}>
+        <div style={{ ...S.card, textAlign: "center" }}><div style={{ fontFamily: font, fontSize: 22, fontWeight: 800, color: T.navy }}>{filtered.length}</div><div style={{ fontSize: 10, color: T.textDim }}>Bills</div></div>
+        <div style={{ ...S.card, textAlign: "center" }}><div style={{ fontFamily: font, fontSize: 22, fontWeight: 800, color: T.success }}>{paidCount}</div><div style={{ fontSize: 10, color: T.textDim }}>Paid</div></div>
+        <div style={{ ...S.card, textAlign: "center" }}><div style={{ fontFamily: font, fontSize: 18, fontWeight: 800, color: T.navy }}>₹{totalRev.toLocaleString("en-IN")}</div><div style={{ fontSize: 10, color: T.textDim }}>Revenue</div></div>
+      </div>
+      <button style={S.btn("primary", true)} onClick={doExport} disabled={!filtered.length}>{I.dl("#fff")} Download {months[month-1]} {year} (CSV)</button>
+      {filtered.length > 0 && <div style={{ marginTop: 16 }}>
+        {filtered.slice(0,5).map(b => <div key={b.billNo} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${T.border}`, fontSize: 13 }}><span>{b.customerName} <span style={{ color: T.textDim }}>• {b.items?.length} items</span></span><span style={{ fontWeight: 700, color: T.navy }}>₹{b.grandTotal}</span></div>)}
+        {filtered.length > 5 && <p style={{ fontSize: 12, color: T.textDim, textAlign: "center", marginTop: 6 }}>+{filtered.length-5} more</p>}
+      </div>}
+    </div>
+  );
+}
+
+// ═══ SETTINGS ═══
+function SettingsPage({ settings, setSettings }) {
+  const [activeSection, setActiveSection] = useState(null);
+  const updateItem = (section, idx, field, value) => { setSettings(prev => { const arr = [...prev[section]]; arr[idx] = { ...arr[idx], [field]: field === "name" ? value : Number(value)||0 }; return { ...prev, [section]: arr }; }); };
+  const addItem = (section, template) => setSettings(p => ({ ...p, [section]: [...p[section], { ...template, id: genId() }] }));
+  const removeItem = (section, idx) => setSettings(p => ({ ...p, [section]: p[section].filter((_,i) => i !== idx) }));
+
+  const SectionEditor = ({ title, section, template }) => {
+    const open = activeSection === section;
+    return (
+      <div style={S.card}>
+        <div onClick={() => setActiveSection(open ? null : section)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
+          <span style={{ fontFamily: font, fontSize: 15, fontWeight: 700 }}>{title}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12, color: T.textDim }}>{settings[section]?.length||0}</span>
+            <span style={{ fontSize: 16, color: T.textDim, transition: "transform 0.2s", transform: open ? "rotate(180deg)" : "none" }}>▾</span>
+          </div>
+        </div>
+        {open && <div style={{ marginTop: 12 }}>
+          {settings[section]?.map((item, idx) => (
+            <div key={item.id||idx} style={{ padding: "8px 0", borderBottom: `1px solid ${T.bg}`, display: "flex", gap: 6, alignItems: "center" }}>
+              <input style={{ ...S.input, flex: 2, fontSize: 13, padding: "8px 10px" }} value={item.name} onChange={e => updateItem(section, idx, "name", e.target.value)} placeholder="Name" />
+              <div style={{ display: "flex", alignItems: "center", gap: 4, flex: 1 }}>
+                <span style={{ fontSize: 12, color: T.textDim }}>₹</span>
+                <input type="number" step="0.01" style={{ ...S.input, fontSize: 13, padding: "8px 10px" }} value={item.rate} onChange={e => updateItem(section, idx, "rate", e.target.value)} />
+              </div>
+              <button onClick={() => removeItem(section, idx)} style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>{I.trash()}</button>
+            </div>
+          ))}
+          <button style={{ ...S.btn("ghost"), marginTop: 8, fontSize: 12 }} onClick={() => addItem(section, template)}>{I.plus(T.navy, 14)} Add</button>
+        </div>}
+      </div>
+    );
+  };
+
+  return (
+    <div style={S.page}>
+      <h2 style={S.h2}>Settings & Pricing</h2>
+      <div style={S.card}>
+        <div style={{ fontFamily: font, fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Shop Details</div>
+        <label style={S.label}>Shop Name</label>
+        <input style={S.input} value={settings.shopName} onChange={e => setSettings(p => ({ ...p, shopName: e.target.value }))} />
+        <div style={{ height: 8 }} />
+        <label style={S.label}>Address</label>
+        <textarea style={{ ...S.input, minHeight: 60, resize: "vertical" }} value={settings.shopAddress} onChange={e => setSettings(p => ({ ...p, shopAddress: e.target.value }))} />
+        <div style={{ height: 8 }} />
+        <label style={S.label}>Phone</label>
+        <input style={S.input} value={settings.shopPhone} onChange={e => setSettings(p => ({ ...p, shopPhone: e.target.value }))} />
+        <div style={{ height: 8 }} />
+        <label style={S.label}>GSTIN</label>
+        <input style={S.input} value={settings.shopGSTIN} onChange={e => setSettings(p => ({ ...p, shopGSTIN: e.target.value }))} />
+      </div>
+      <div style={S.card}>
+        <div style={{ fontFamily: font, fontSize: 15, fontWeight: 700, marginBottom: 10 }}>General</div>
+        <div style={S.grid2}>
+          <div><label style={S.label}>Wastage (inches)</label><input type="number" style={S.input} value={settings.wastageInches} onChange={e => setSettings(p => ({ ...p, wastageInches: Number(e.target.value)||0 }))} /></div>
+          <div><label style={S.label}>Canvas Frame ₹/ft</label><input type="number" style={S.input} value={settings.canvasFrameRate} onChange={e => setSettings(p => ({ ...p, canvasFrameRate: Number(e.target.value)||0 }))} /></div>
+        </div>
+        <div style={{ marginTop: 8 }}><label style={S.label}>GST Rate (%)</label><input type="number" style={{ ...S.input, width: 100 }} value={settings.gstRate} onChange={e => setSettings(p => ({ ...p, gstRate: Number(e.target.value)||0 }))} /></div>
+      </div>
+      <SectionEditor title="Mounts" section="mounts" template={{ name: "", rate: 0, unit: "sq.inch", maxW: 30, maxH: 40 }} />
+      <SectionEditor title="Covers" section="covers" template={{ name: "", rate: 0, unit: "sq.inch" }} />
+      <SectionEditor title="Frames" section="frames" template={{ name: "", rate: 0, unit: "running inch" }} />
+      <SectionEditor title="Media (Print)" section="media" template={{ name: "", rate: 0, unit: "sq.ft" }} />
+      <SectionEditor title="Backboards" section="backboards" template={{ name: "", rate: 0, unit: "sq.inch" }} />
+      <div style={S.card}>
+        <div onClick={() => setActiveSection(activeSection === "colors" ? null : "colors")} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
+          <span style={{ fontFamily: font, fontSize: 15, fontWeight: 700 }}>Frame Colors</span>
+          <span style={{ fontSize: 16, color: T.textDim, transform: activeSection === "colors" ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}>▾</span>
+        </div>
+        {activeSection === "colors" && <div style={{ marginTop: 10 }}>
+          <div style={S.chipRow}>
+            {settings.frameColors.map((c, i) => <div key={i} style={{ display: "flex", alignItems: "center", gap: 2 }}><span style={{ ...S.chip(true), paddingRight: 6 }}>{c}</span><button onClick={() => setSettings(p => ({ ...p, frameColors: p.frameColors.filter((_,j) => j!==i) }))} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, color: T.danger }}>×</button></div>)}
+          </div>
+          <button style={{ ...S.btn("ghost"), marginTop: 8, fontSize: 12 }} onClick={() => { const c = prompt("New color:"); if (c?.trim()) setSettings(p => ({ ...p, frameColors: [...p.frameColors, c.trim()] })); }}>{I.plus(T.navy, 14)} Add Color</button>
+        </div>}
+      </div>
+      <div style={{ marginTop: 20, textAlign: "center" }}>
+        <button style={S.btn("danger")} onClick={() => { if (confirm("Reset all settings to default?")) setSettings(DEFAULT_SETTINGS); }}>Reset to Default Pricing</button>
+      </div>
+    </div>
+  );
+}
+
+// ═══ SECURITY / LOGIN SESSIONS PAGE ═══
+function SecurityPage({ loginSessions, user }) {
+  const successSessions = loginSessions.filter(s => s.success);
+  const failedSessions = loginSessions.filter(s => !s.success);
+
+  const SessionRow = ({ s }) => (
+    <div style={{ ...S.card, padding: 12, marginBottom: 8, borderLeft: `3px solid ${s.success ? T.success : T.danger}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 14, color: s.success ? T.navy : T.danger }}>{s.user_email}</div>
+          <div style={{ fontSize: 11, color: T.textDim, marginTop: 2 }}>
+            {s.device} • {s.browser} • {s.platform}
+          </div>
+          {s.notes && !s.success && <div style={{ fontSize: 11, color: T.danger, marginTop: 2 }}>{s.notes}</div>}
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={S.badge(s.success ? T.success : T.danger)}>{s.success ? "✓ OK" : "✗ DENIED"}</div>
+          <div style={{ fontSize: 10, color: T.textDim, marginTop: 4 }}>
+            {new Date(s.login_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
+            {" "}
+            {new Date(s.login_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={S.page}>
+      <h2 style={S.h2}>Security & Access</h2>
+
+      {/* Current User */}
+      <div style={{ ...S.card, background: T.accentBg, borderColor: T.sky }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: T.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Currently Logged In</div>
+        <div style={{ fontWeight: 700, fontSize: 16, color: T.navy }}>{user?.email || "Local mode"}</div>
+        <div style={{ fontSize: 12, color: T.textDim, marginTop: 2 }}>Session active</div>
+      </div>
+
+      {/* Stats */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
+        <div style={{ ...S.card, textAlign: "center", padding: 12 }}>
+          <div style={{ fontFamily: font, fontSize: 22, fontWeight: 800, color: T.navy }}>{loginSessions.length}</div>
+          <div style={{ fontSize: 10, color: T.textDim }}>Total Logins</div>
+        </div>
+        <div style={{ ...S.card, textAlign: "center", padding: 12 }}>
+          <div style={{ fontFamily: font, fontSize: 22, fontWeight: 800, color: T.success }}>{successSessions.length}</div>
+          <div style={{ fontSize: 10, color: T.textDim }}>Successful</div>
+        </div>
+        <div style={{ ...S.card, textAlign: "center", padding: 12 }}>
+          <div style={{ fontFamily: font, fontSize: 22, fontWeight: 800, color: T.danger }}>{failedSessions.length}</div>
+          <div style={{ fontSize: 10, color: T.textDim }}>Denied</div>
+        </div>
+      </div>
+
+      {/* Failed Attempts (shown first — most important) */}
+      {failedSessions.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: T.danger, marginBottom: 8 }}>⚠️ Failed / Denied Attempts</div>
+          {failedSessions.slice(0, 10).map((s, i) => <SessionRow key={i} s={s} />)}
+        </div>
+      )}
+
+      {/* Recent Successful Logins */}
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: T.navy, marginBottom: 8 }}>Recent Successful Logins</div>
+        {successSessions.length === 0 && <p style={{ color: T.textDim, fontSize: 13 }}>No login sessions recorded yet.</p>}
+        {successSessions.slice(0, 20).map((s, i) => <SessionRow key={i} s={s} />)}
+      </div>
+
+      {/* Security Info */}
+      <div style={{ ...S.card, marginTop: 16, background: T.bg }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: T.navy, marginBottom: 8 }}>Security Info</div>
+        <div style={{ fontSize: 12, color: T.textDim, lineHeight: 1.6 }}>
+          • Max 5 authorized users<br/>
+          • Public signups disabled<br/>
+          • All login attempts tracked (success + failed)<br/>
+          • Device and browser info recorded<br/>
+          • Data encrypted in transit (SSL) and at rest<br/>
+          • Row Level Security enforced at database level<br/>
+          • Supabase does NOT use your data for AI training
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(App));
+</script>
+</body>
+</html>
